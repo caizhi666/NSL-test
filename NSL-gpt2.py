@@ -15,7 +15,8 @@ def gelu(x):
         Input: Tensor
         Output: Tensor
     """
-    pass
+    return 0.5 * x * (1 + torch.tanh(torch.sqrt(torch.tensor(2 / math.pi)) * (x + 0.044715 * torch.pow(x, 3))))
+    
 
 
 def softmax(x):
@@ -24,6 +25,8 @@ def softmax(x):
         Input: Tensor
         Output: Tensor
     """
+    exp_x = torch.exp(x - torch.max(x, dim=-1, keepdim=True).values)
+    return exp_x / torch.sum(exp_x, dim=-1, keepdim=True)
     pass
 
 
@@ -36,7 +39,10 @@ def layer_norm(x, g_b, eps:float = 1e-5):
         Output: Tensor
     """
     g, b = torch.Tensor(g_b['g']), torch.Tensor(g_b['b'])
-    
+    mean = torch.mean(x, dim=-1, keepdim=True)
+    var = torch.var(x, dim=-1, keepdim=True, unbiased=False)  
+    x_normalized = (x - mean) / torch.sqrt(var + eps)
+    return g * x_normalized + b
     pass
 
 def linear(x, w_b):  # [m, in], [in, out], [out] -> [m, out]
@@ -48,6 +54,9 @@ def linear(x, w_b):  # [m, in], [in, out], [out] -> [m, out]
         Output: Tensor
     """
     w, b = w_b['w'], w_b['b']
+    w=torch.Tensor(w)
+    b=torch.Tensor(b)
+    return torch.matmul(x,w)+b
     pass
     
 
@@ -61,6 +70,14 @@ def ffn(x, mlp):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Output: Tensor
     """
     w_b1, w_b2 = mlp['c_fc'], mlp['c_proj']
+
+    # b1,w1=w_b1['b'],w_b1['w']
+    # b2,w2=w_b2['b'],w_b2['w']
+    # b1=torch.Tensor(b1)
+    # b2=torch.Tensor(b2)
+    # w1=torch.Tensor(w1)
+    # w2=torch.Tensor(w2)
+    return linear(gelu(linear(x,w_b1)),w_b2)
     pass
 
 
@@ -77,6 +94,11 @@ def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] 
             mlp: dictionary that load from gpt2 weight. w_b1 and w_b2 are the params of two linear layer
         Output: Tensor
     """
+    d_k=k.size(-1)
+    score=torch.matmul(q,torch.transpose(k,0,1))/torch.sqrt(torch.tensor(d_k,dtype=q.dtype,device=q.device))
+    score=score.masked_fill(mask==-1e9,-1e9)
+    weight=softmax(score)
+    return torch.matmul(weight,v)
     pass
 
 def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -98,7 +120,8 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Task: Split the q,k,v matrix from the tensor x
         Notes: [n_seq, 3*n_embd] -> 3 * [n_seq, n_embd]
     """
-    qkv = None # need to modify
+
+    qkv = torch.chunk(x,3,dim=-1) # need to modify
 
     # Split into heads
     qkv_heads = [qkv_part.chunk(n_head, dim=-1) for qkv_part in qkv]  # 3 * [n_seq, n_embd] -> 3 * n_head * [n_seq, n_embd/n_head]
@@ -115,7 +138,8 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
             | 0    0    0  ...   0  |
         Mask is a tensor whose dimension is [n_seq, n_seq]
     """
-    causal_mask = None # need to modify
+    n_seq=x.size(dim=0)
+    causal_mask = torch.triu(torch.ones(n_seq, n_seq), diagonal=1) * (-1e9)
 
     # Perform attention over each head
     out_heads = [attention(q, k, v, causal_mask) for q, k, v in qkv_heads]  # n_head * [n_seq, n_embd/n_head]
@@ -125,7 +149,7 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Task: merge multi-heads results
         Notes: n_head * [n_seq, n_embd/n_head] --> [n_seq, n_embd]
     """
-    x = None # need to modify
+    x = torch.cat(out_heads,-1) # need to modify
     
     # Out projection
     x = linear(x, c_proj)  # [n_seq, n_embd] -> [n_seq, n_embd]
