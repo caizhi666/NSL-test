@@ -4,6 +4,10 @@ import time
 import math
 torch.set_printoptions(8)
 
+class kv_cache:
+    def __init__(self):
+        pass
+
 def gelu(x):
     """
         Task: Use the torch API to implement the approximate calculation formula of the `GELU`
