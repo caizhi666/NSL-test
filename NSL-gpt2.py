@@ -4,9 +4,26 @@ import time
 import math
 torch.set_printoptions(8)
 
+global_kv_cache=None
+
 class kv_cache:
-    def __init__(self):
-        pass
+    def __init__(self,n_heads,dim_k,dim_v):
+        self.n_heads=n_heads
+        self.dim_k=dim_k
+        self.dim_v=dim_v
+        self.cache_k=[]
+        self.cache_v=[]
+
+    def update(self,ki,vi):
+        self.cache_k.append(ki)
+        self.cache_v.append(vi)
+
+    def get_kv(self):
+        return torch.cat(self.cache_k,dim=0),torch.cat(self.cache_v,dim=0)
+    
+    def clear_cache(self):
+        self.cache_v.clear()
+        self.cache_k.clear()
 
 def gelu(x):
     """
@@ -115,6 +132,8 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
             n_head: number of head
         Output: Tensorying multi-head attention and linear transformation, shape [n_seq, n_embd].
     """
+    global global_kv_cache
+
     c_attn, c_proj = attn['c_attn'], attn['c_proj']
     # qkv projection
     x = linear(x, c_attn)  # [n_seq, n_embd] -> [n_seq, 3*n_embd]
@@ -125,11 +144,21 @@ def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
         Notes: [n_seq, 3*n_embd] -> 3 * [n_seq, n_embd]
     """
 
-    qkv = torch.chunk(x,3,dim=-1) # need to modify
+    q,k,v = torch.chunk(x,3,dim=-1) # need to modify
+    # k_heads=torch.chunk(k,n_head,dim=-1)
+    # v_heads=torch.chunk(v,n_head,dim=-1)
+    # for ki,vi in zip(k_heads,v_heads):
+    #     global_kv_cache.updata(ki,vi)
+    global_kv_cache.update(k,v)
+
+
+    all_k,all_v=global_kv_cache.get_kv()
 
     # Split into heads
-    qkv_heads = [qkv_part.chunk(n_head, dim=-1) for qkv_part in qkv]  # 3 * [n_seq, n_embd] -> 3 * n_head * [n_seq, n_embd/n_head]
-    qkv_heads = list(zip(*qkv_heads))  # [3, n_head, n_seq, n_embd/n_head]
+    q_heads=torch.chunk(q,n_head,dim=-1)
+    k_heads=torch.chunk(k,n_head,dim=-1)
+    v_heads=torch.chunk(v,n_head,dim=-1)
+    qkv_heads = list(zip(q_heads,k_heads,v_heads))  # [3, n_head, n_seq, n_embd/n_head]
 
     # Causal mask to hide future inputs from being attended to
     """
@@ -190,11 +219,31 @@ def gpt2(inputs, params, n_head):  # [n_seq] -> [n_seq, n_vocab]
 
 def generate(inputs, params, n_head, n_tokens_to_generate):
     from tqdm import tqdm
+    global global_kv_cache
+#置空
+    if global_kv_cache is not None:
+        global_kv_cache.clear_cache()
+#初始化
+    else :
+        n_embd=params['wpe'].shape[1]
+        dim_k=n_embd/n_head
+        dim_v=dim_k
+        global_kv_cache=kv_cache(n_heads=n_head,dim_k=dim_k,dim_v=dim_v)
+
+#存储kv
+    init_len = len(inputs)
+
+    if init_len > 0:
+        init_x = torch.Tensor(params['wte'][inputs] + params['wpe'][range(init_len)])
+        for block in params['blocks']:
+            mha(layer_norm(init_x, block['ln_1']), block['attn'], n_head)
 
     for _ in tqdm(range(n_tokens_to_generate), "generating"):  # auto-regressive decode loop
-        logits = gpt2(inputs, params, n_head=n_head)  # model forward pass
+        logits = gpt2(inputs[-1:], params, n_head=n_head)  # model forward pass
         next_id = np.argmax(logits[-1])  # greedy sampling
         inputs.append(int(next_id))  # append prediction to input
+
+    global_kv_cache.clear_cache()
 
     return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
