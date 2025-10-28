@@ -132,14 +132,14 @@ def mha(x, attn, n_head, kv_cache, isfirst):  # [n_seq, n_embd] -> [n_seq, n_emb
             
             causal_mask = torch.zeros(qh.size(0), k_comb.size(0), dtype=x_proj.dtype, device=x_proj.device)
             # 更新kvcache
-            kv_cache[i] = (k_comb.detach(), v_comb.detach())
+            kv_cache[i] = (k_comb, v_comb)
         else:
           
             k_comb = kh
             v_comb = vh
             causal_mask = torch.triu(torch.ones(n_seq, n_seq, device=kh.device), diagonal=1) * (-1e9)
 
-            kv_cache[i] = (k_comb.detach(), v_comb.detach())
+            kv_cache[i] = (k_comb, v_comb)
 
         out_h = attention(qh, k_comb, v_comb, causal_mask)  # [n_q, head_dim]
         out_heads.append(out_h)
