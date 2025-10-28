@@ -138,6 +138,7 @@ def mha(x, attn, n_head, kv_cache, isfirst):  # [n_seq, n_embd] -> [n_seq, n_emb
             k_comb = kh
             v_comb = vh
             causal_mask = torch.triu(torch.ones(n_seq, n_seq, device=kh.device), diagonal=1) * (-1e9)
+
             kv_cache[i] = (k_comb.detach(), v_comb.detach())
 
         out_h = attention(qh, k_comb, v_comb, causal_mask)  # [n_q, head_dim]
@@ -166,8 +167,8 @@ def gpt2(inputs, params, n_head, kvcache_list, isfirst, pos_base=None):  # [n_se
 
     if (not isfirst) : 
         # 单个token增量输入
-        x = wte[inputs[0]] + wpe[pos_base]
-        x = torch.Tensor(x).unsqueeze(0)  # [1, n_embd]
+        x = wte[inputs] + wpe[pos_base]
+        x = torch.Tensor(x)  # [1, n_embd]
     else:
         # 第一次调用
         x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
