@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import time
 import math
+
 torch.set_printoptions(8)
 
 def gelu(x):
@@ -196,49 +197,64 @@ def generate(inputs, params, n_head, n_tokens_to_generate):
 
 def greedy_speculative_generate(inputs, draft_params, target_params, hparams_draft, hparams_target, n_tokens_to_generate, K):
     
-    """
-        Task: Load 124M and 1558M models at the same time, use greedy sampling, and complete speculative decoding
-    
-        Inputs:
-            inputs (list): The initial list of token IDs from the prompt.
-            draft_params, target_params: Model weights for the draft and target models.
-            hparams_draft, hparams_target: Hyperparameters for both models.
-            n_tokens_to_generate (int): The number of new tokens to generate.
-            K (int): The number of tokens the draft model speculates at each step (e.g., 4).
-
-        Returns:
-            list: A list of newly generated token IDs.
-            
-    """
     generated_ids = []
     current_inputs = list(inputs)
-
     while len(generated_ids) < n_tokens_to_generate:
-        pass
+        temp = list(current_inputs)
+        pos=len(current_inputs)-1
+        
+        for _ in range(K):#草稿
+            draft_logits = gpt2(temp, draft_params, n_head=hparams_draft["n_head"])  
+            draft_next_id =(np.argmax(draft_logits[-1]))  
+            temp.append(int(draft_next_id))
+
+#目标概率分布
+        target_logits = gpt2(temp,target_params,n_head=hparams_target["n_head"])
+        target_next_id = np.argmax(target_logits[-1])
+        is_credible=True#连续几个草稿都正确
+        
+        for i in range(pos,pos+K):
+            ps=draft_logits[i]
+            qs=target_logits[i]
+            pid=np.argmax(ps)
+            qid=np.argmax(qs)
+            generated_ids.append(int(qid))
+            current_inputs.append(int(qid))
+
+            if pid!=qid:
+                is_credible=False
+                break
+
+        if is_credible:#奖励的一个
+                generated_ids.append(int(target_next_id)) 
+                current_inputs.append(int(target_next_id))
+    generated_ids=generated_ids[:n_tokens_to_generate]
+        
 
     return generated_ids
 
 
-def main(prompt: str, n_tokens_to_generate: int = 5, model_size: str = "124M", models_dir: str = "models"):
+def main(prompt: str, n_tokens_to_generate: int = 5,draft_model_size:str ="124M", target_model_size: str = "1558M", models_dir: str = "models"):
     from utils import load_encoder_hparams_and_params
 
     # load encoder, hparams, and params from the released open-ai gpt-2 files
-    encoder, hparams, params = load_encoder_hparams_and_params(model_size, models_dir)
+    draft_encoder, hparams_draft, draft_params = load_encoder_hparams_and_params(draft_model_size, models_dir)
+    target_encoder, hparams_target, target_params = load_encoder_hparams_and_params(target_model_size, models_dir)
 
     # encode the input string using the BPE tokenizer
-    input_ids = encoder.encode(prompt)
+    input_ids = target_encoder.encode(prompt)
 
     # make sure we are not surpassing the max sequence length of our model
-    assert len(input_ids) + n_tokens_to_generate < hparams["n_ctx"]
-
+    assert len(input_ids) + n_tokens_to_generate < hparams_draft["n_ctx"]
+    assert len(input_ids) + n_tokens_to_generate < hparams_target["n_ctx"]
     # generate output ids
     start = time.time()
-    output_ids = generate(input_ids, params, hparams["n_head"], n_tokens_to_generate)
+    output_ids = greedy_speculative_generate(input_ids, draft_params, target_params, hparams_draft, hparams_target, n_tokens_to_generate, 5)
     end = time.time()
     print(f"Time taken to generate {n_tokens_to_generate} tokens: {end - start:.2f}s")
 
     # decode the ids back into a string
-    output_text = encoder.decode(output_ids)
+    output_text = target_encoder.decode(output_ids)
     return output_text
 
 
