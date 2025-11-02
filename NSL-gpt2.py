@@ -101,60 +101,67 @@ def attention(q, k, v, mask):  # [n_q, d_k], [n_k, d_k], [n_k, d_v], [n_q, n_k] 
     return torch.matmul(weight,v)
     pass
 
-def mha(x, attn, n_head, kv_cache, isfirst):  # [n_seq, n_embd] -> [n_seq, n_embd]
-    
+def mha(x, attn, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
+    """
+        Task: Complete the code of the multi-head attention
+        
+        Input: 
+            x: Tensor
+            attn: dictionary that load from gpt2 weight. c_attn and c_proj are the params of two linear layer
+            n_head: number of head
+        Output: Tensorying multi-head attention and linear transformation, shape [n_seq, n_embd].
+    """
     c_attn, c_proj = attn['c_attn'], attn['c_proj']
-    x_proj = linear(x, c_attn)  # [n_seq, 3*n_embd]
-    # split q, k, v
-    q, k, v = torch.chunk(x_proj, 3, dim=-1)  # each [n_seq, n_embd]
+    # qkv projection
+    x = linear(x, c_attn)  # [n_seq, n_embd] -> [n_seq, 3*n_embd]
+    
+    # Split into qkv
+    """
+        Task: Split the q,k,v matrix from the tensor x
+        Notes: [n_seq, 3*n_embd] -> 3 * [n_seq, n_embd]
+    """
 
-    # split into per-head tensors
-    q_heads = q.chunk(n_head, dim=-1)
-    k_heads = k.chunk(n_head, dim=-1)
-    v_heads = v.chunk(n_head, dim=-1)
+    qkv = torch.chunk(x,3,dim=-1) # need to modify
 
-    n_seq = x.size(0)
+    # Split into heads
+    qkv_heads = [qkv_part.chunk(n_head, dim=-1) for qkv_part in qkv]  # 3 * [n_seq, n_embd] -> 3 * n_head * [n_seq, n_embd/n_head]
+    qkv_heads = list(zip(*qkv_heads))  # [3, n_head, n_seq, n_embd/n_head]
 
+    # Causal mask to hide future inputs from being attended to
+    """
+        Task: Construct mask matrix
+        Notes: 
+            | 0  -inf -inf ... -inf |
+            | 0    0  -inf ... -inf |
+            | 0    0    0  ... -inf |
+            |...  ...  ... ...  ... | 
+            | 0    0    0  ...   0  |
+        Mask is a tensor whose dimension is [n_seq, n_seq]
+    """
+    n_seq=x.size(dim=0)
+    causal_mask = torch.triu(torch.ones(n_seq, n_seq), diagonal=1) * (-1e9)
 
-    out_heads = []
-    for i in range(n_head):
-        qh = q_heads[i]      # [n_q, head_dim]
-        kh = k_heads[i]      # [n_k_cur, head_dim]
-        vh = v_heads[i]      #同k
-
-        if (not isfirst) : 
-            past_k, past_v = kv_cache[i]  # [n_past, head_dim], [n_past, head_dim]，取出历史kv
-            past_k = past_k.to(kh.device)
-            past_v = past_v.to(vh.device)
-            #拼接历史kv与新token的kv
-            k_comb = torch.cat([past_k, kh], dim=0)  # [n_past + n_k_cur, head_dim]
-            v_comb = torch.cat([past_v, vh], dim=0)
-            
-            causal_mask = torch.zeros(qh.size(0), k_comb.size(0), dtype=x_proj.dtype, device=x_proj.device)
-            # 更新kvcache
-            kv_cache[i] = (k_comb, v_comb)
-        else:
-          
-            k_comb = kh
-            v_comb = vh
-            causal_mask = torch.triu(torch.ones(n_seq, n_seq, device=kh.device), diagonal=1) * (-1e9)
-
-            kv_cache[i] = (k_comb, v_comb)
-
-        out_h = attention(qh, k_comb, v_comb, causal_mask)  # [n_q, head_dim]
-        out_heads.append(out_h)
-
-    # Merge heads and out projection
-    x_out = torch.cat(out_heads, dim=-1)  # [n_q, n_embd]
-    x_out = linear(x_out, c_proj)  # [n_q, n_embd] -> [n_q, n_embd]
-    return x_out
+    # Perform attention over each head
+    out_heads = [attention(q, k, v, causal_mask) for q, k, v in qkv_heads]  # n_head * [n_seq, n_embd/n_head]
+    
+    # Merge heads
+    """
+        Task: merge multi-heads results
+        Notes: n_head * [n_seq, n_embd/n_head] --> [n_seq, n_embd]
+    """
+    x = torch.cat(out_heads,-1) # need to modify
+    
+    # Out projection
+    x = linear(x, c_proj)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    
+    return x
 
 
-def transformer_block(x, block, n_head,kv_cache,isfirst):  # [n_seq, n_embd] -> [n_seq, n_embd]
+def transformer_block(x, block, n_head):  # [n_seq, n_embd] -> [n_seq, n_embd]
     mlp, attn, ln_1, ln_2 = block['mlp'], block['attn'], block['ln_1'], block['ln_2']
     
     # multi-head causal self attention
-    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head,kv_cache=kv_cache,isfirst=isfirst)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    x = x + mha(layer_norm(x, ln_1), attn, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
 
     # position-wise feed forward network
     x = x + ffn(layer_norm(x, ln_2), mlp)  # [n_seq, n_embd] -> [n_seq, n_embd]
@@ -162,54 +169,30 @@ def transformer_block(x, block, n_head,kv_cache,isfirst):  # [n_seq, n_embd] -> 
     return x
 
 
-def gpt2(inputs, params, n_head, kvcache_list, isfirst, pos_base=None):  # [n_seq] -> [n_seq, n_vocab]
+def gpt2(inputs, params, n_head):  # [n_seq] -> [n_seq, n_vocab]
     wte, wpe, blocks, ln_f = params['wte'], params['wpe'], params['blocks'], params['ln_f']
-
-    if (not isfirst) : 
-        # 单个token增量输入
-        x = wte[inputs] + wpe[pos_base]
-        x = torch.Tensor(x)  # [1, n_embd]
-    else:
-        # 第一次调用
-        x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
-        x = torch.Tensor(x)
-
-
-    for block, kv_cache in zip(blocks, kvcache_list):
-        x = transformer_block(x, block, n_head=n_head, kv_cache=kv_cache, isfirst=isfirst)  # [n_seq, n_embd] -> [n_seq, n_embd]
+    # token + positional embeddings
+    x = wte[inputs] + wpe[range(len(inputs))]  # [n_seq] -> [n_seq, n_embd]
+    
+    x = torch.Tensor(x)
+    # forward pass through n_layer transformer blocks
+    for block in blocks:
+        x = transformer_block(x, block, n_head=n_head)  # [n_seq, n_embd] -> [n_seq, n_embd]
 
     # projection to vocab
     x = layer_norm(x, ln_f)  # [n_seq, n_embd] -> [n_seq, n_embd]
-    wte_t = torch.Tensor(wte)
-    return x @ wte_t.T  # [n_seq, n_embd] -> [n_seq, n_vocab]
+    return x @ wte.T  # [n_seq, n_embd] -> [n_seq, n_vocab]
 
 
 def generate(inputs, params, n_head, n_tokens_to_generate):
     from tqdm import tqdm
-    isfirst = True
-    # 初始化每一层的kvcache
-    kvcache_list = [[None] * n_head for _ in range(len(params['blocks']))]
 
     for _ in tqdm(range(n_tokens_to_generate), "generating"):  # auto-regressive decode loop
-        if isfirst:
-            real_inputs = inputs  # 第一次
-            pos_base = None
-        else:
-            real_inputs = [inputs[-1]]  # 单个token
-            pos_base = len(inputs) - 1  # 这个token的位置
+        logits = gpt2(inputs, params, n_head=n_head)  # model forward pass
+        next_id = np.argmax(logits[-1])  # greedy sampling
+        inputs.append(int(next_id))  # append prediction to input
 
-        logits = gpt2(real_inputs, params, n_head=n_head, kvcache_list=kvcache_list, isfirst=isfirst, pos_base=pos_base) 
-        next_id = int(np.argmax(logits[-1]))
-        inputs.append(next_id)
-        isfirst = False
-
-    # 清空
-    for i in range(len(kvcache_list)):
-        kvcache_list[i] = [None] * n_head
-
-    return inputs[len(inputs) - n_tokens_to_generate :]  
-    
-
+    return inputs[len(inputs) - n_tokens_to_generate :]  # only return generated ids
 
 def greedy_speculative_generate(inputs, draft_params, target_params, hparams_draft, hparams_target, n_tokens_to_generate, K):
     
